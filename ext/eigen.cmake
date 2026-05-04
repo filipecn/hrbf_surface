@@ -1,0 +1,15 @@
+include(FetchContent)
+FetchContent_Declare(
+  Eigen
+  GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+  GIT_TAG 5.0.1
+  GIT_SHALLOW TRUE
+  GIT_PROGRESS TRUE)
+
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(EIGEN_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(EIGEN_MPL2_ONLY ON CACHE BOOL "" FORCE)
+set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
+set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(Eigen)
