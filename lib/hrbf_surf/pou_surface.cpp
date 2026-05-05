@@ -31,13 +31,13 @@
 
 namespace hrbf_surf {
 
-Result<PoUSurface> PoUSurface::from(const PointCloud &pcl, f64 cell_size,
-                                    f64 overlap) {
-  auto bounds = pcl.computeBounds();
+Result<PoUSurface> PoUSurface::from(PointCloud ::Ptr pcl, Scalar cell_size,
+                                    Scalar overlap) {
+  auto bounds = pcl->computeBounds();
 
   // define a overlap for PoU
-  f64 half_cell_size = cell_size / 2.0;
-  hermes::geo::vec3d half_search_box(half_cell_size + cell_size * overlap);
+  Scalar half_cell_size = cell_size / 2.0;
+  Vector half_search_box(half_cell_size + cell_size * overlap / 2.0);
 
   auto grid_size_f = (bounds.upper - bounds.lower) / cell_size;
   hermes::size3 grid_size(static_cast<h_index>(std::ceil(grid_size_f.x)) + 1,
@@ -47,16 +47,18 @@ Result<PoUSurface> PoUSurface::from(const PointCloud &pcl, f64 cell_size,
   HERMES_INFO("grid setup (total partitions = {})", grid_size.total());
   // setup partitions
   PoUSurface ps;
+  ps.pcl_ = pcl;
   ps.bounds_ = bounds;
+  HERMES_LOG_VARIABLES(bounds, grid_size, cell_size, grid_size_f,
+                       half_cell_size);
   for (auto ijk : hermes::range3(grid_size)) {
     PartitionData pd;
-    pd.center = hermes::geo::point3d(ijk.i * cell_size + half_cell_size,
-                                     ijk.j * cell_size + half_cell_size,
-                                     ijk.k * cell_size + half_cell_size);
-    hermes::geo::bounds::BoundingBox3<f64> search_box(
-        pd.center - half_search_box, pd.center + half_search_box);
-    pd.indices = pcl.searchBox(search_box);
-    pd.radius = half_search_box.x;
+    auto center = Point(ijk.i * cell_size + half_cell_size,
+                        ijk.j * cell_size + half_cell_size,
+                        ijk.k * cell_size + half_cell_size);
+    Bounds search_box(center - half_search_box, center + half_search_box);
+    pd.indices = pcl->searchBox(search_box);
+    pd.bounds = search_box;
     // consider only cells that provide enough points for a stable HRBF
     if (pd.indices.size() > 15) {
       ps.partitions_.emplace_back(pd);
@@ -70,51 +72,87 @@ Result<PoUSurface> PoUSurface::from(const PointCloud &pcl, f64 cell_size,
   // compute parititions
 #pragma omp parallel for schedule(dynamic)
   for (h_index i = 0; i < ps.partitions_.size(); ++i) {
-    auto hrbf = HRBFSystem::from(pcl.positions(), pcl.normals(),
-                                 ps.partitions_[i].indices);
-    ps.partitions_[i].hrbf = std::move(*hrbf);
+    ps.partitions_[i].hrbf.init(pcl->positions(), pcl->normals(),
+                                ps.partitions_[i].indices);
+    HERMES_LOG_VARIABLES(i, ps.partitions_[i].indices.size());
+    if (ps.partitions_[i].hrbf.hasNaN()) {
+      HERMES_ERROR("invalid hrbf system");
+    }
   }
+  HERMES_INFO("finished solving partitions");
 
   return Result<PoUSurface>(std::move(ps));
 }
 
-Result<PoUSurface> PoUSurface::from(const PointCloud &pcl) {
-  auto bounds = pcl.computeBounds();
+Result<PoUSurface> PoUSurface::from(PointCloud::Ptr pcl) {
+  auto bounds = pcl->computeBounds();
+
   PoUSurface ps;
   ps.bounds_ = bounds;
+  ps.pcl_ = pcl;
+
   PartitionData pd;
-  pd.center = bounds.center();
-  pd.indices = pcl.searchBox(bounds);
-  pd.radius = bounds.diagonal().length() / 2.0;
+  pd.bounds = bounds;
+  pd.indices = pcl->searchBox(bounds);
+
   // consider only cells that provide enough points for a stable HRBF
   if (pd.indices.size() > 15) {
     ps.partitions_.emplace_back(pd);
-    auto hrbf = HRBFSystem::from(pcl.positions(), pcl.normals(),
-                                 ps.partitions_[0].indices);
-    ps.partitions_[0].hrbf = std::move(*hrbf);
+    HERMES_INFO("computing single hrbf with {} indices and bounds {}",
+                ps.partitions_[0].indices.size(), hermes::to_string(bounds));
+    ps.partitions_[0].hrbf.init(pcl->positions(), pcl->normals(),
+                                ps.partitions_[0].indices);
+    HERMES_LOG_VARIABLE(ps.partitions_[0].indices.size());
+    HERMES_LOG_VARIABLE(ps.partitions_[0].hrbf.hasNaN());
   }
   return Result<PoUSurface>(std::move(ps));
 }
 
-f64 wendlandWeight(f64 distance, f64 radius) {
-  f64 q = distance / radius;
+Scalar wendlandWeight(Scalar distance, Scalar radius) {
+  Scalar q = distance / radius;
   if (q >= 1.0)
     return 0.0;
-  f64 t = 1.0 - q;
+  Scalar t = 1.0 - q;
   return (t * t * t * t) * (4.0 * q + 1.0); // Wendland C2
 }
 
-f64 PoUSurface::operator()(const hermes::geo::point3d &p) const {
-  f64 total_value = 0.0;
-  f64 total_weight = 0.0;
+Scalar PoUSurface::operator()(const Point &p) const {
+
+  // // find partitions this point belongs
+  // h_index partition_count = 0;
+  // Scalar sum = 0.0;
+  // for (const auto &partition : partitions_) {
+  //   if (partition.bounds.contains(p)) {
+  //     sum += partition.hrbf(pcl_->positions(), partition.indices, p);
+  //   }
+  // }
+  // if (partition_count)
+  //   return sum / partition_count;
+
+  // get closest partition
+  h_index closest_idx = 0;
+  Scalar closest_dist = 1 << 20;
+  for (h_index i = 0; i < partitions_.size(); ++i) {
+    auto dist = hermes::geo::distance2(p, partitions_[i].bounds.center());
+    if (dist < closest_dist) {
+      closest_dist = dist;
+      closest_idx = i;
+    }
+  }
+  // compute from closest partition
+  return partitions_[closest_idx].hrbf(pcl_->positions(),
+                                       partitions_[closest_idx].indices, p);
+
+  Scalar total_value = 0.0;
+  Scalar total_weight = 0.0;
 
   for (const auto &partition : partitions_) {
-    f64 dist = (p - partition.center).length();
-    if (dist < partition.radius) {
-      f64 w = wendlandWeight(dist, partition.radius);
-      total_value += w * partition.hrbf(p);
-      total_weight += w;
-    }
+    Scalar dist = (p - partition.bounds.center()).length();
+    // if (dist < partition.radius * 2.0) {
+    Scalar w = wendlandWeight(dist, partition.bounds.diagonal().length() / 2.0);
+    total_value += w * partition.hrbf(pcl_->positions(), partition.indices, p);
+    total_weight += w;
+    // }
   }
 
   if (total_weight < 1e-9)
@@ -122,7 +160,7 @@ f64 PoUSurface::operator()(const hermes::geo::point3d &p) const {
   return total_value / total_weight;
 }
 
-PoUSurface::SurfaceMesh PoUSurface::mesh(f64 voxel_size) const {
+PoUSurface::SurfaceMesh PoUSurface::mesh(Scalar voxel_size) const {
   hermes::size3 resolution(
       std::ceil((bounds_.upper.x - bounds_.lower.x) / voxel_size) + 1,
       std::ceil((bounds_.upper.y - bounds_.lower.y) / voxel_size) + 1,
@@ -132,6 +170,8 @@ PoUSurface::SurfaceMesh PoUSurface::mesh(f64 voxel_size) const {
   Eigen::MatrixXd GV(N, 3); // Grid Vertex positions
   Eigen::VectorXd S(N);     // Scalar values
 
+  HERMES_LOG_VARIABLE(resolution);
+  HERMES_INFO("evaluating surface");
 #pragma omp parallel for collapse(3)
   for (h_index z = 0; z < resolution.depth; ++z) {
     for (h_index y = 0; y < resolution.height; ++y) {
@@ -139,9 +179,9 @@ PoUSurface::SurfaceMesh PoUSurface::mesh(f64 voxel_size) const {
         auto idx =
             x + y * resolution.width + z * resolution.width * resolution.height;
 
-        hermes::geo::point3d p(bounds_.lower.x + x * voxel_size,
-                               bounds_.lower.y + y * voxel_size,
-                               bounds_.lower.z + z * voxel_size);
+        Point p(bounds_.lower.x + x * voxel_size,
+                bounds_.lower.y + y * voxel_size,
+                bounds_.lower.z + z * voxel_size);
         GV.row(idx)[0] = p.x;
         GV.row(idx)[1] = p.y;
         GV.row(idx)[2] = p.z;
@@ -151,6 +191,7 @@ PoUSurface::SurfaceMesh PoUSurface::mesh(f64 voxel_size) const {
     }
   }
 
+  HERMES_INFO("running marching cubes");
   PoUSurface::SurfaceMesh m;
   // Isovalue for HRBF is 0.0
   igl::copyleft::marching_cubes(S, GV, resolution.width, resolution.height,
@@ -159,19 +200,20 @@ PoUSurface::SurfaceMesh PoUSurface::mesh(f64 voxel_size) const {
 }
 
 PoUSurface::SurfaceMesh PoUSurface::partitionMesh(h_index index,
-                                                  f64 voxel_size) const {
-  auto radius = hermes::geo::vec3d(partitions_[index].radius);
-  auto lower = partitions_[index].center - radius;
-  auto upper = partitions_[index].center + radius;
-
-  hermes::size3 resolution(std::ceil((upper.x - lower.x) / voxel_size) + 1,
-                           std::ceil((upper.y - lower.y) / voxel_size) + 1,
-                           std::ceil((upper.z - lower.z) / voxel_size) + 1);
+                                                  Scalar voxel_size) const {
+  const auto diagonal = partitions_[index].bounds.diagonal() / voxel_size;
+  const auto lower = partitions_[index].bounds.lower;
+  const hermes::size3 resolution(std::ceil(diagonal.x) + 1,
+                                 std::ceil(diagonal.y) + 1,
+                                 std::ceil(diagonal.z) + 1);
   auto N = resolution.total();
+
+  HERMES_LOG_VARIABLE(resolution);
 
   Eigen::MatrixXd GV(N, 3); // Grid Vertex positions
   Eigen::VectorXd S(N);     // Scalar values
 
+  HERMES_INFO("evaluating surface");
 #pragma omp parallel for collapse(3)
   for (h_index z = 0; z < resolution.depth; ++z) {
     for (h_index y = 0; y < resolution.height; ++y) {
@@ -179,18 +221,19 @@ PoUSurface::SurfaceMesh PoUSurface::partitionMesh(h_index index,
         auto idx =
             x + y * resolution.width + z * resolution.width * resolution.height;
 
-        hermes::geo::point3d p(lower.x + x * voxel_size,
-                               lower.y + y * voxel_size,
-                               lower.z + z * voxel_size);
+        Point p(lower.x + x * voxel_size, lower.y + y * voxel_size,
+                lower.z + z * voxel_size);
         GV.row(idx)[0] = p.x;
         GV.row(idx)[1] = p.y;
         GV.row(idx)[2] = p.z;
 
-        S(idx) = partitions_[index].hrbf(p);
+        S(idx) = partitions_[index].hrbf(pcl_->positions(),
+                                         partitions_[index].indices, p);
       }
     }
   }
 
+  HERMES_INFO("running marching cubes");
   PoUSurface::SurfaceMesh m;
   // Isovalue for HRBF is 0.0
   igl::copyleft::marching_cubes(S, GV, resolution.width, resolution.height,

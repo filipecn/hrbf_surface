@@ -105,14 +105,14 @@ inline std::vector<uint8_t> read_file_binary(const std::string &pathToFile) {
   return fileBufferBytes;
 }
 
-Result<PointCloud> loadPCLFromPly(std::filesystem::path filepath) {
+Result<PointCloud::Ptr> loadPCLFromPly(std::filesystem::path filepath) {
   std::unique_ptr<std::istream> file_stream;
   std::vector<uint8_t> byte_buffer;
 
   const bool preload_into_memory = true;
 
-  std::vector<hermes::geo::point3d> verts;
-  std::vector<hermes::geo::normal3d> norms;
+  std::vector<Point> verts;
+  std::vector<Vector> norms;
 
   try {
     // For most files < 1gb, preloading the entire file upfront into memory and
@@ -269,7 +269,7 @@ Result<PointCloud> loadPCLFromPly(std::filesystem::path filepath) {
   } catch (const std::exception &e) {
     std::cerr << "Caught tinyply exception: " << e.what() << std::endl;
   }
-  return Result<PointCloud>(std::move(PointCloud::from(verts, norms)));
+  return Result<PointCloud::Ptr>(PointCloud::from(verts, norms));
 }
 
 void writePointCloud(std::filesystem::path path, const PointCloud &cloud) {
@@ -297,8 +297,7 @@ void writePointCloud(std::filesystem::path path, const PointCloud &cloud) {
 }
 
 void writeSurface(std::filesystem::path path, const PoUSurface &surface,
-                  const hermes::geo::bounds::BoundingBox3<f64> &bounds,
-                  f64 voxel_size) {
+                  const Bounds &bounds, Scalar voxel_size) {
 
   auto m = surface.mesh(voxel_size);
   HERMES_LOG_VARIABLE(m.V.rows());

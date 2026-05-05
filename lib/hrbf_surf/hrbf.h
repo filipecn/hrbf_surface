@@ -29,51 +29,330 @@
 #include <hrbf_surf/hrbf_core.h>
 #include <hrbf_surf/hrbf_phi_funcs.h>
 #include <hrbf_surf/result.h>
+#include <hrbf_surf/types.h>
 
 #include <Eigen/Dense>
 #include <vector>
 
-#include <hermes/geometry/normal.h>
-#include <hermes/geometry/point.h>
-
 namespace hrbf_surf {
 
 struct CubicRBF {
-  static f64 phi(f64 r, f64 e = 0) { return r * r * r; }
-  static f64 ddr(f64 r, f64 e = 0) { return 3 * r * r; }
-  static f64 d2dr2(f64 r, f64 e = 0) { return 6 * r; }
-  static f64 ddx(f64 dx, f64 r, f64 e = 0) { return dx * 3 * r; }
-  static f64 d2dx2(f64 dx, f64 r, f64 e = 0) {
+  static Scalar phi(Scalar r, Scalar e = 0) { return r * r * r; }
+  static Scalar ddr(Scalar r, Scalar e = 0) { return 3 * r * r; }
+  static Scalar d2dr2(Scalar r, Scalar e = 0) { return 6 * r; }
+  static Scalar ddx(Scalar dx, Scalar r, Scalar e = 0) { return dx * 3 * r; }
+  static Scalar d2dx2(Scalar dx, Scalar r, Scalar e = 0) {
     if (hermes::numbers::cmp::is_zero(r))
       return 0;
     return 3 * (r + dx * dx / r);
   }
-  static f64 d2dxy(f64 dx, f64 dy, f64 r, f64 e = 0) {
+  static Scalar d2dxy(Scalar dx, Scalar dy, Scalar r, Scalar e = 0) {
     if (hermes::numbers::cmp::is_zero(r))
       return 0;
     return 3 * dx * dy / r;
   }
 };
 
-class HRBFSystem {
+class HRBFSystem2 {
 public:
-  static Result<HRBFSystem>
-  from(const std::vector<hermes::geo::point3d> &positions,
-       const std::vector<hermes::geo::normal3d> &normals,
-       const std::vector<h_index> &ids);
+  static Result<HRBFSystem2> from(const std::vector<Point> &positions,
+                                  const std::vector<Vector> &normals,
+                                  const std::vector<h_index> &ids);
 
-  static Result<HRBFSystem>
-  from(const std::vector<hermes::geo::point3d> &positions,
-       const std::vector<hermes::geo::normal3d> &normals);
+  static Result<HRBFSystem2> from(const std::vector<Point> &positions,
+                                  const std::vector<Vector> &normals);
 
   // eval
-  f64 operator()(const hermes::geo::point3d &p) const;
+  Scalar operator()(const Point &p) const;
 
 private:
-  HRBF_fit<f64, 3, Rbf_pow3<f64>> solver_;
-  // Eigen::Matrix<f64, 3, Eigen::Dynamic> centers_;
-  // Eigen::Matrix<f64, Eigen::Dynamic, 1> alphas_;
-  // Eigen::Matrix<f64, 3, Eigen::Dynamic> betas_;
+  HRBF_fit<Scalar, 3, Rbf_pow3<Scalar>> solver_;
+};
+
+template <typename RBFKernel> class HRBFSystem {
+public:
+  HRBFSystem() = default;
+
+  void init(const std::vector<Point> &centers,
+            const std::vector<Vector> &normals, const std::vector<size_t> &ids,
+            Scalar e = 0) {
+#define P(I) centers[ids[I]]
+#define D(I, J) hermes::geo::distance(P(I), P(J))
+
+#define UPPER_diag BLOCK_I_OFFSET + i, BLOCK_J_OFFSET + i
+#define UPPER_upper BLOCK_I_OFFSET + i, BLOCK_J_OFFSET + j
+#define UPPER_lower BLOCK_I_OFFSET + j, BLOCK_J_OFFSET + i
+#define LOWER_diag BLOCK_J_OFFSET + i, BLOCK_I_OFFSET + i
+#define LOWER_upper BLOCK_J_OFFSET + i, BLOCK_I_OFFSET + j
+#define LOWER_lower BLOCK_J_OFFSET + j, BLOCK_I_OFFSET + i
+#define DIAG_diag BLOCK_I_OFFSET + i, BLOCK_I_OFFSET + i
+#define DIAG_upper BLOCK_I_OFFSET + i, BLOCK_I_OFFSET + j
+#define DIAG_lower BLOCK_I_OFFSET + j, BLOCK_I_OFFSET + i
+
+    //                        p  px py pz
+    //     N    N    N    N   1  1  1  1
+    // N  PHI -DDX -DDY -DDZ  1  X  Y  Z      w     alpha
+    // N  DDX -DXX -DXY -DXZ  0  1  0  0      wx    alpha_x
+    // N  DDY -DXY -DYY -DYZ  0  0  1  0   x  wy =  alpha_y
+    // N  DDZ -DXZ -DYZ -DZZ  0  0  0  1      wz    alpha_z
+    // 1   1    0    0    0   0  0  0  0      g     0
+    // 1   X    1    0    0   0  0  0  0      gx    0
+    // 1   Y    0    1    0   0  0  0  0      gy    0
+    // 1   Z    0    0    1   0  0  0  0      gz    0
+    // setup matrix size
+    size_t n = ids.size();
+    size_t N = n * 4 + POLY;
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(N, N);
+
+    // p
+    if (POLY > 0) {
+      for (size_t i = 0; i < n; ++i) {
+        // 1
+        int offset = n * 4;
+        for (size_t dim = 0; dim <= 3; ++dim) {
+          A(i + n * dim, offset + dim) = A(offset + dim, i + n * dim) = 1;
+          // X  Y  Z
+          if (dim > 0) {
+            A(i, offset + dim) = A(offset + dim, i) = P(i)[dim - 1];
+          }
+        }
+      }
+    }
+
+    // PHI
+    for (size_t i = 0; i < n; ++i) {
+      A(i, i) = RBFKernel::phi(0, e);
+      for (size_t j = i + 1; j < n; ++j) {
+        A(i, j) = A(j, i) = RBFKernel::phi(D(i, j), e);
+      }
+    }
+    // DD?
+    for (int dim = 0; dim < 3; ++dim) {
+      int BLOCK_I_OFFSET = 0;
+      int BLOCK_J_OFFSET = dim * n + n;
+      for (int i = 0; i < n; ++i) {
+        // DD? diag
+        A(UPPER_diag) = -RBFKernel::ddx(0, 0, e);
+        A(LOWER_diag) = -A(UPPER_diag);
+        for (int j = i + 1; j < n; ++j) {
+          auto d = P(j) - P(i);
+
+          // d/d dim (phi(i,j)) -> -DD?(I, J)
+          A(UPPER_upper) = RBFKernel::ddx(d[dim], d.length(), e);
+          A(UPPER_lower) = -A(UPPER_upper);
+
+          // d/d dim (phi(i,j)) -> DD?(J, I) = -DD?(I, J)
+          A(LOWER_upper) = A(UPPER_lower);
+          A(LOWER_lower) = A(UPPER_upper);
+        }
+      }
+    }
+
+    // DXX
+    for (int dim = 0; dim < 3; ++dim) {
+      int BLOCK_I_OFFSET = dim * n + n;
+      for (int i = 0; i < n; ++i) {
+        A(DIAG_diag) = -RBFKernel::d2dx2(0, 0, e);
+        for (int j = i + 1; j < n; ++j) {
+          // d/d dim (phi(i,j)) -> -DD?(I, J)
+          auto d = P(j) - P(i);
+          A(DIAG_upper) = A(DIAG_lower) =
+              -RBFKernel::d2dx2(d[dim], d.length(), e);
+        }
+      }
+    }
+
+    // DXY
+    for (int dim_i = 0; dim_i < 3; ++dim_i) {
+      int BLOCK_I_OFFSET = dim_i * n + n;
+      for (int dim_j = dim_i + 1; dim_j < 3; ++dim_j) {
+        int BLOCK_J_OFFSET = dim_j * n + n;
+        for (int i = 0; i < n; ++i) {
+          for (int j = 0; j < n; ++j) {
+            auto d = P(j) - P(i);
+
+            A(UPPER_upper) = A(UPPER_lower) = A(LOWER_upper) = A(LOWER_lower) =
+                -RBFKernel::d2dxy(d[dim_i], d[dim_j], d.length(), e);
+          }
+        }
+      }
+    }
+
+    A = A.inverse();
+#undef D
+#undef P
+
+    w.resize(N);
+    b.resize(N);
+
+#define G(D, I) normals[ids[I]][D]
+
+    for (size_t i = 0; i < n; ++i)
+      b[i] = 0.0; // F(i);
+    for (size_t dim = 0; dim < 3; ++dim)
+      for (size_t i = 0; i < n; ++i)
+        b[n + dim * n + i] = G(dim, i);
+
+    for (size_t p = 0; p < POLY; ++p)
+      b[4 * n + p] = 0;
+
+    w = A * b;
+
+#undef G
+#undef F
+  }
+
+  Scalar operator()(const std::vector<Point> &centers,
+                    const std::vector<size_t> &ids, const Point &p,
+                    Scalar e = 0) const {
+#define C(I) centers[ids[I]]
+
+    size_t n = ids.size();
+    size_t N = n * 4 + POLY;
+
+    if (w.rows() != N) {
+      HERMES_ERROR("bad system size {} != {} != {}", N, w.rows(), b.rows());
+      return {};
+    }
+
+    Eigen::VectorXd v;
+    auto wt = w.transpose();
+    v.resize(N);
+
+    for (size_t i = 0; i < n; ++i)
+      v[i] = RBFKernel::phi(hermes::geo::distance(p, C(i)), e);
+    for (size_t dim = 0; dim < 3; ++dim) {
+      for (size_t i = 0; i < n; ++i) {
+        auto d = p - C(i);
+        v[n + dim * n + i] = -RBFKernel::ddx(d[dim], d.length(), e);
+      }
+      if (POLY == 4) {
+        v[4 * n + 0] = 1;
+        v[4 * n + dim + 1] = p[dim];
+      }
+    }
+
+    return wt * v;
+#undef C
+  }
+
+  bool empty() const { return w.size() == 0; }
+  bool hasNaN() const { return w.hasNaN() || b.hasNaN(); }
+
+private:
+  Eigen::VectorXd w;
+  Eigen::VectorXd b;
+
+  h_index POLY = 4;
+};
+
+template <typename RBFKernel> class RBFSystem {
+public:
+  void init(const std::vector<Point> &centers, const std::vector<size_t> &ids,
+            Scalar e = 0) {
+#define P(I) centers[ids[I]]
+#define D(I, J) hermes::geo::distance(P(I), P(J))
+
+    //     N
+    // N  PHI    w   alpha
+
+    // setup matrix size
+    size_t n = ids.size();
+    size_t N = n;
+    A = Eigen::MatrixXd::Zero(N, N);
+
+    // PHI
+    for (size_t i = 0; i < n; ++i) {
+      A(i, i) = RBFKernel::phi(0, e);
+      for (size_t j = i + 1; j < n; ++j) {
+        A(i, j) = A(j, i) = RBFKernel::phi(D(i, j), e);
+      }
+    }
+
+    A = A.inverse();
+    w.resize(N);
+    b.resize(N);
+#undef D
+#undef P
+  }
+
+  void build(const std::vector<Scalar> &values,
+             const std::vector<size_t> &ids) {
+#define F(I) values[ids[I]]
+#define G(D, I) grad_values[ids[I]][D]
+
+    size_t n = ids.size();
+    size_t N = n;
+
+    if (w.rows() != N || b.rows() != N) {
+      HERMES_ERROR("bad system size {} != {} != {}", N, w.rows(), b.rows());
+      return;
+    }
+
+    for (size_t i = 0; i < n; ++i)
+      b[i] = F(i);
+
+    w = A * b;
+
+#undef G
+#undef F
+  }
+
+  Scalar operator()(const std::vector<Point> &centers,
+                    const std::vector<size_t> &ids, const Point &p,
+                    Scalar e = 0) const {
+
+    size_t n = ids.size();
+    Eigen::VectorXd v;
+    auto wt = w.transpose();
+    v.resize(n);
+
+    for (size_t i = 0; i < n; ++i)
+      v[i] = RBFKernel::phi(hermes::geo::distance(p, centers[ids[i]]), e);
+
+    return wt * v;
+  }
+
+  std::vector<Scalar> eval(const std::vector<Point> &centers,
+                           const std::vector<size_t> &ids,
+                           const std::vector<Point> &points,
+                           Scalar e = 0) const {
+#define C(I) centers[ids[I]]
+
+    size_t n = ids.size();
+    size_t N = n;
+
+    if (w.rows() != N) {
+      HERMES_ERROR("bad system size {} != {} != {}", N, w.rows(), b.rows());
+      return {};
+    }
+
+    Eigen::VectorXd v;
+    auto wt = w.transpose();
+    v.resize(N);
+
+    std::vector<Scalar> r;
+
+    bool first = true;
+    for (const auto &p : points) {
+      for (size_t i = 0; i < n; ++i)
+        v[i] = RBFKernel::phi(hermes::geo::distance(p, C(i)), e);
+
+      r.emplace_back(wt * v);
+    }
+
+    return r;
+
+#undef C
+  }
+
+  bool empty() const { return A.size() == 0; }
+  bool hasNaN() const { return A.hasNaN() || w.hasNaN() || b.hasNaN(); }
+
+private:
+  Eigen::MatrixXd A;
+  Eigen::VectorXd w;
+  Eigen::VectorXd b;
 };
 
 } // namespace hrbf_surf

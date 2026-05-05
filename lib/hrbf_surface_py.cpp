@@ -32,67 +32,27 @@
 
 namespace py = pybind11;
 
-using py_array_f64 = py::array_t<f64, py::array::c_style>;
+using namespace hrbf_surf;
+
+using py_array_Scalar = py::array_t<Scalar, py::array::c_style>;
 using py_array_u32 = py::array_t<u64, py::array::c_style>;
 
 template <typename DataType>
-py_array_f64 vector_pyarray(const std::vector<DataType> &data) {
-  std::vector<f64> py_data(data.size() * 3);
+py_array_Scalar vector_pyarray(const std::vector<DataType> &data) {
+  std::vector<Scalar> py_data(data.size() * 3);
   std::vector<h_size> shape = {data.size(), 3};
-  std::vector<h_size> strides = {3 * sizeof(f64), sizeof(f64)};
+  std::vector<h_size> strides = {3 * sizeof(Scalar), sizeof(Scalar)};
   for (h_size i = 0; i < data.size(); ++i) {
     py_data[i * 3 + 0] = data[i].x;
     py_data[i * 3 + 1] = data[i].y;
     py_data[i * 3 + 2] = data[i].z;
   }
-  return py_array_f64(shape, strides, py_data.data());
+  return py_array_Scalar(shape, strides, py_data.data());
 }
 
-struct py_PointCloud {
-  py_array_f64 positions;
-  py_array_f64 normals;
-};
-
-py_PointCloud loadPointCloud(const std::string &filepath) {
-
-  auto pcl = hrbf_surf::io::loadPCLFromPly(filepath);
-
-  py_PointCloud py_pcl;
-  py_pcl.positions = vector_pyarray<hermes::geo::point3d>((*pcl).positions());
-  py_pcl.normals = vector_pyarray<hermes::geo::normal3d>((*pcl).normals());
-
-  return py_pcl;
-}
-
-py_PointCloud sphere(f64 radius, h_index res) {
-  f64 step_size = hermes::math::constants::pi / res;
-  std::vector<hermes::geo::point3d> positions;
-  std::vector<hermes::geo::normal3d> normals;
-  for (f64 phi = 0.0; phi <= hermes::math::constants::pi; phi += step_size)
-    for (f64 theta = 0.0; theta <= hermes::math::constants::two_pi;
-         theta += step_size) {
-      positions.emplace_back(radius * std::sin(phi) * std::cos(theta),
-                             radius * std::sin(phi) * std::sin(theta),
-                             radius * std::cos(phi));
-      normals.emplace_back(std::sin(phi) * std::cos(theta),
-                           std::sin(phi) * std::sin(theta), std::cos(phi));
-    }
-
-  py_PointCloud py_pcl;
-  py_pcl.positions = vector_pyarray<hermes::geo::point3d>(positions);
-  py_pcl.normals = vector_pyarray<hermes::geo::normal3d>(normals);
-
-  return py_pcl;
-}
-
-struct py_SurfaceMesh {
-  Eigen::MatrixXd V; // Mesh Vertices
-  Eigen::MatrixXi F; // Mesh Faces (triangles)
-};
-
-template <typename T> std::vector<T> from_pyarray(const py_array_f64 &arr) {
+template <typename T> std::vector<T> from_pyarray(const py_array_Scalar &arr) {
   auto buf = arr.request();
-  const f64 *ptr = static_cast<const f64 *>(buf.ptr);
+  const Scalar *ptr = static_cast<const Scalar *>(buf.ptr);
   if (buf.ndim != 2)
     throw std::runtime_error("Only 2D arrays are supported.");
   h_size positions_count = buf.shape[0];
@@ -102,13 +62,96 @@ template <typename T> std::vector<T> from_pyarray(const py_array_f64 &arr) {
   return values;
 }
 
-py_SurfaceMesh reconstruct(const py_PointCloud &py_pcl, f64 voxel_size) {
-  auto positions = from_pyarray<hermes::geo::point3d>(py_pcl.positions);
-  auto normals = from_pyarray<hermes::geo::normal3d>(py_pcl.normals);
+struct py_PointCloud {
+  py_array_Scalar positions;
+  py_array_Scalar normals;
+};
+
+py_PointCloud loadPointCloud(const std::string &filepath) {
+
+  auto pcl = hrbf_surf::io::loadPCLFromPly(filepath);
+
+  py_PointCloud py_pcl;
+  py_pcl.positions = vector_pyarray<Point>((*pcl)->positions());
+  py_pcl.normals = vector_pyarray<Vector>((*pcl)->normals());
+
+  return py_pcl;
+}
+
+py_PointCloud sphere(Scalar radius, h_index res) {
+  Scalar step_size = hermes::math::constants::pi / res;
+  std::vector<Point> positions;
+  std::vector<Vector> normals;
+  for (Scalar phi = step_size; phi < hermes::math::constants::pi - step_size;
+       phi += step_size)
+    for (Scalar theta = step_size;
+         theta < hermes::math::constants::two_pi - step_size;
+         theta += step_size) {
+      positions.emplace_back(radius * std::sin(phi) * std::cos(theta),
+                             radius * std::sin(phi) * std::sin(theta),
+                             radius * std::cos(phi));
+      Vector n(std::sin(phi) * std::cos(theta), std::sin(phi) * std::sin(theta),
+               std::cos(phi));
+      n.normalize();
+      normals.emplace_back(n.x, n.y, n.z);
+    }
+
+  py_PointCloud py_pcl;
+  py_pcl.positions = vector_pyarray<Point>(positions);
+  py_pcl.normals = vector_pyarray<Vector>(normals);
+
+  return py_pcl;
+}
+
+py_PointCloud square(Scalar size, h_index res) {
+  std::vector<Point> positions;
+  std::vector<Vector> normals;
+
+  auto step = size / res;
+  for (auto ij : hermes::range2(hermes::size2(res))) {
+    positions.emplace_back(Point() + Vector(step * ij.i, step * ij.j, 0.0));
+    normals.emplace_back(Vector(0.0, 0.0, 1.0));
+  }
+
+  py_PointCloud py_pcl;
+  py_pcl.positions = vector_pyarray<Point>(positions);
+  py_pcl.normals = vector_pyarray<Vector>(normals);
+
+  return py_pcl;
+}
+
+struct py_Surface {
+  PoUSurface ps;
+};
+
+py_Surface reconstruct(const py_PointCloud &py_pcl, Scalar partition_size) {
+  auto positions = from_pyarray<Point>(py_pcl.positions);
+  auto normals = from_pyarray<Vector>(py_pcl.normals);
 
   auto pcl = hrbf_surf::PointCloud::from(positions, normals);
-  auto ps = hrbf_surf::PoUSurface::from(pcl); //, 2.0, 0.2);
-  auto s = (*ps).partitionMesh(0, voxel_size);
+  auto ps = hrbf_surf::PoUSurface::from(pcl, partition_size, 0.2);
+
+  py_Surface pys;
+  pys.ps = *ps;
+  return pys;
+}
+
+struct py_SurfaceMesh {
+  Eigen::MatrixXd V; // Mesh Vertices
+  Eigen::MatrixXi F; // Mesh Faces (triangles)
+};
+
+py_SurfaceMesh create_partition_mesh(const py_Surface &ps, Scalar voxel_size,
+                                     h_index i = 0) {
+  auto s = ps.ps.partitionMesh(0, voxel_size);
+  py_SurfaceMesh sm;
+  sm.F = s.F;
+  sm.V = s.V;
+  return sm;
+}
+
+py_SurfaceMesh create_mesh(const py_Surface &ps, Scalar voxel_size) {
+  auto s = ps.ps.mesh(voxel_size);
   py_SurfaceMesh sm;
   sm.F = s.F;
   sm.V = s.V;
@@ -121,11 +164,15 @@ PYBIND11_MODULE(hrbf_surface_py, m) {
   py::class_<py_PointCloud>(m, "PointCloud")
       .def_readonly("positions", &py_PointCloud::positions)
       .def_readonly("normals", &py_PointCloud::normals);
+  py::class_<py_Surface>(m, "Surface");
   py::class_<py_SurfaceMesh>(m, "SurfaceMesh")
       .def_readonly("positions", &py_SurfaceMesh::V)
       .def_readonly("faces", &py_SurfaceMesh::F);
 
   m.def("load_point_cloud", &loadPointCloud);
-  m.def("pcl_sphere", &sphere);
+  m.def("sphere", &sphere);
+  m.def("square", &square);
   m.def("reconstruct", &reconstruct);
+  m.def("partition_mesh", &create_partition_mesh);
+  m.def("mesh", &create_mesh);
 }

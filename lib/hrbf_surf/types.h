@@ -20,40 +20,19 @@
  * IN THE SOFTWARE.
  */
 
-/// \file   point_cloud.h
+/// \file   types.h
 /// \author FilipeCN (filipedecn@gmail.com)
-/// \date   2026-04-30
+/// \date   2026-05-04
 
-#pragma once
-
-#include <hrbf_surf/types.h>
-
-#include <Eigen/Dense>
-#include <hermes/core/ref.h>
-#include <nanoflann.hpp>
+#include <hermes/geometry/bounds.h>
+#include <hermes/geometry/point.h>
+#include <hermes/geometry/vector.h>
 
 namespace hrbf_surf {
 
-using PCL = Eigen::Matrix<Scalar, Eigen::Dynamic, 3, Eigen::RowMajor>;
-using KDTree = nanoflann::KDTreeEigenMatrixAdaptor<PCL>;
-
-class PointCloud {
-public:
-  using Ptr = hermes::Ref<PointCloud>;
-  static Ptr from(const std::vector<Point> &positions,
-                  const std::vector<Vector> &normals);
-
-  Bounds computeBounds() const;
-  std::vector<h_index> searchBox(const Bounds &box) const;
-
-  const std::vector<Point> &positions() const;
-  const std::vector<Vector> &normals() const;
-
-private:
-  std::unique_ptr<KDTree> tree_;
-  std::unique_ptr<PCL> pcl_;
-  std::vector<Point> positions_;
-  std::vector<Vector> normals_;
-};
+using Scalar = f64;
+using Point = hermes::geo::Point3<Scalar>;
+using Vector = hermes::geo::Vector3<Scalar>;
+using Bounds = hermes::geo::bounds::BoundingBox3<Scalar>;
 
 } // namespace hrbf_surf

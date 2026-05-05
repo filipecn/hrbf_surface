@@ -39,25 +39,25 @@ public:
     Eigen::MatrixXi F; // Mesh Faces (triangles)
   };
 
-  static Result<PoUSurface> from(const PointCloud &pcl, f64 cell_size,
-                                 f64 overlap);
-  static Result<PoUSurface> from(const PointCloud &pcl);
+  static Result<PoUSurface> from(PointCloud::Ptr pcl, Scalar cell_size,
+                                 Scalar overlap);
+  static Result<PoUSurface> from(PointCloud::Ptr pcl);
 
-  f64 operator()(const hermes::geo::point3d &p) const;
+  Scalar operator()(const Point &p) const;
 
-  SurfaceMesh mesh(f64 voxel_size) const;
-  SurfaceMesh partitionMesh(h_index index, f64 voxel_size) const;
+  SurfaceMesh mesh(Scalar voxel_size) const;
+  SurfaceMesh partitionMesh(h_index index, Scalar voxel_size) const;
 
 private:
   struct PartitionData {
-    hermes::geo::point3d center;
+    Bounds bounds;
     std::vector<h_index> indices;
-    HRBFSystem hrbf;
-    f64 radius;
+    HRBFSystem<CubicRBF> hrbf;
   };
 
-  hermes::geo::bounds::BoundingBox3<f64> bounds_;
+  Bounds bounds_;
   std::vector<PartitionData> partitions_;
+  PointCloud::Ptr pcl_;
 };
 
 } // namespace hrbf_surf

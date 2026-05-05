@@ -34,10 +34,9 @@ namespace hrbf_surf::io {
 
 void writePointCloud(std::filesystem::path path, const PointCloud &cloud);
 
-Result<PointCloud> loadPCLFromPly(std::filesystem::path path);
+Result<PointCloud::Ptr> loadPCLFromPly(std::filesystem::path path);
 
 void writeSurface(std::filesystem::path path, const PoUSurface &surface,
-                  const hermes::geo::bounds::BoundingBox3<f64> &bounds,
-                  f64 voxel_size);
+                  const Bounds &bounds, Scalar voxel_size);
 
 } // namespace hrbf_surf::io

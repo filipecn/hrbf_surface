@@ -28,34 +28,31 @@
 
 namespace hrbf_surf {
 
-PointCloud PointCloud::from(const std::vector<hermes::geo::point3d> &positions,
-                            const std::vector<hermes::geo::normal3d> &normals) {
-  PointCloud pcl;
-  pcl.positions_ = positions;
-  pcl.normals_ = normals;
-  pcl.pcl_ = std::make_unique<PCL>(
-      Eigen::Map<PCL>(&pcl.positions_[0].x, pcl.positions_.size(), 3));
-  pcl.tree_ = std::make_unique<KDTree>(3, std::cref(*pcl.pcl_.get()), 10);
+PointCloud::Ptr PointCloud::from(const std::vector<Point> &positions,
+                                 const std::vector<Vector> &normals) {
+  auto pcl = PointCloud::Ptr::shared();
+  pcl->positions_ = positions;
+  pcl->normals_ = normals;
+  pcl->pcl_ = std::make_unique<PCL>(
+      Eigen::Map<PCL>(&pcl->positions_[0].x, pcl->positions_.size(), 3));
+  pcl->tree_ = std::make_unique<KDTree>(3, std::cref(*(pcl->pcl_.get())), 10);
   return pcl;
 }
 
-hermes::geo::bounds::BoundingBox3<f64> PointCloud::computeBounds() const {
+Bounds PointCloud::computeBounds() const {
   Eigen::Vector3d min_pt = pcl_->colwise().minCoeff();
   Eigen::Vector3d max_pt = pcl_->colwise().maxCoeff();
-  HERMES_LOG_VARIABLE(min_pt);
   auto padding = 0.05; // Add a small margin for safety
   min_pt.array() -= padding;
   max_pt.array() += padding;
-  return hermes::geo::bounds::BoundingBox3<f64>(
-      hermes::geo::point3d(min_pt[0], min_pt[1], min_pt[2]),
-      hermes::geo::point3d(max_pt[0], max_pt[1], max_pt[2]));
+  return Bounds(Point(min_pt[0], min_pt[1], min_pt[2]),
+                Point(max_pt[0], max_pt[1], max_pt[2]));
 }
 
-std::vector<h_index>
-PointCloud::searchBox(const hermes::geo::bounds::BoundingBox3<f64> &box) const {
+std::vector<h_index> PointCloud::searchBox(const Bounds &box) const {
   auto center = box.center();
   auto radius_sqr = box.diagonal().length2();
-  std::vector<nanoflann::ResultItem<Eigen::Index, f64>> r_distances;
+  std::vector<nanoflann::ResultItem<Eigen::Index, Scalar>> r_distances;
   nanoflann::SearchParameters params;
   auto n_found =
       tree_->index_->radiusSearch(&center[0], radius_sqr, r_distances, params);
@@ -69,12 +66,8 @@ PointCloud::searchBox(const hermes::geo::bounds::BoundingBox3<f64> &box) const {
   return indices;
 }
 
-const std::vector<hermes::geo::point3d> &PointCloud::positions() const {
-  return positions_;
-}
+const std::vector<Point> &PointCloud::positions() const { return positions_; }
 
-const std::vector<hermes::geo::normal3d> &PointCloud::normals() const {
-  return normals_;
-}
+const std::vector<Vector> &PointCloud::normals() const { return normals_; }
 
 } // namespace hrbf_surf
