@@ -259,7 +259,8 @@ public:
     // setup matrix size
     size_t n = ids.size();
     size_t N = n;
-    A = Eigen::MatrixXd::Zero(N, N);
+
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(N, N);
 
     // PHI
     for (size_t i = 0; i < n; ++i) {
@@ -274,15 +275,8 @@ public:
     b.resize(N);
 #undef D
 #undef P
-  }
 
-  void build(const std::vector<Scalar> &values,
-             const std::vector<size_t> &ids) {
-#define F(I) values[ids[I]]
 #define G(D, I) grad_values[ids[I]][D]
-
-    size_t n = ids.size();
-    size_t N = n;
 
     if (w.rows() != N || b.rows() != N) {
       HERMES_ERROR("bad system size {} != {} != {}", N, w.rows(), b.rows());
@@ -290,7 +284,7 @@ public:
     }
 
     for (size_t i = 0; i < n; ++i)
-      b[i] = F(i);
+      b[i] = 0.0; // F(i);
 
     w = A * b;
 
@@ -346,11 +340,10 @@ public:
 #undef C
   }
 
-  bool empty() const { return A.size() == 0; }
-  bool hasNaN() const { return A.hasNaN() || w.hasNaN() || b.hasNaN(); }
+  bool empty() const { return w.size() == 0; }
+  bool hasNaN() const { return w.hasNaN() || b.hasNaN(); }
 
 private:
-  Eigen::MatrixXd A;
   Eigen::VectorXd w;
   Eigen::VectorXd b;
 };

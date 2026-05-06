@@ -84,7 +84,7 @@ py_PointCloud sphere(Scalar radius, h_index res) {
   std::vector<Vector> normals;
   for (Scalar phi = step_size; phi < hermes::math::constants::pi - step_size;
        phi += step_size)
-    for (Scalar theta = step_size;
+    for (Scalar theta = 0.0;
          theta < hermes::math::constants::two_pi - step_size;
          theta += step_size) {
       positions.emplace_back(radius * std::sin(phi) * std::cos(theta),
@@ -95,6 +95,12 @@ py_PointCloud sphere(Scalar radius, h_index res) {
       n.normalize();
       normals.emplace_back(n.x, n.y, n.z);
     }
+
+  positions.emplace_back(Point(0.0, 0.0, radius));
+  positions.emplace_back(Point(0.0, 0.0, -radius));
+
+  normals.emplace_back(Point(0.0, 0.0, 1.0));
+  normals.emplace_back(Point(0.0, 0.0, -1.0));
 
   py_PointCloud py_pcl;
   py_pcl.positions = vector_pyarray<Point>(positions);
@@ -120,43 +126,94 @@ py_PointCloud square(Scalar size, h_index res) {
   return py_pcl;
 }
 
-struct py_Surface {
-  PoUSurface ps;
-};
-
-py_Surface reconstruct(const py_PointCloud &py_pcl, Scalar partition_size) {
+PoUSurface::Ptr reconstruct(py_PointCloud py_pcl, Scalar partition_size) {
   auto positions = from_pyarray<Point>(py_pcl.positions);
   auto normals = from_pyarray<Vector>(py_pcl.normals);
 
   auto pcl = hrbf_surf::PointCloud::from(positions, normals);
   auto ps = hrbf_surf::PoUSurface::from(pcl, partition_size, 0.2);
 
-  py_Surface pys;
-  pys.ps = *ps;
-  return pys;
+  return *ps;
+}
+
+PoUSurface::Ptr reconstruct_single(py_PointCloud py_pcl) {
+  auto positions = from_pyarray<Point>(py_pcl.positions);
+  auto normals = from_pyarray<Vector>(py_pcl.normals);
+
+  auto pcl = hrbf_surf::PointCloud::from(positions, normals);
+  auto ps = hrbf_surf::PoUSurface::from(pcl);
+
+  return *ps;
 }
 
 struct py_SurfaceMesh {
   Eigen::MatrixXd V; // Mesh Vertices
   Eigen::MatrixXi F; // Mesh Faces (triangles)
+  Eigen::MatrixXd P; // partition vertices
+  Eigen::MatrixXd B; // partition bounds
 };
 
-py_SurfaceMesh create_partition_mesh(const py_Surface &ps, Scalar voxel_size,
+py_SurfaceMesh create_partition_mesh(PoUSurface::Ptr ps, Scalar voxel_size,
                                      h_index i = 0) {
-  auto s = ps.ps.partitionMesh(0, voxel_size);
+  auto s = ps->partitionMesh(0, voxel_size);
   py_SurfaceMesh sm;
   sm.F = s.F;
   sm.V = s.V;
   return sm;
 }
 
-py_SurfaceMesh create_mesh(const py_Surface &ps, Scalar voxel_size) {
-  auto s = ps.ps.mesh(voxel_size);
+py_SurfaceMesh create_mesh(PoUSurface::Ptr ps, Scalar voxel_size) {
+  auto s = ps->mesh(voxel_size);
   py_SurfaceMesh sm;
   sm.F = s.F;
   sm.V = s.V;
   return sm;
 }
+
+py_SurfaceMesh reconstruct_surface(py_PointCloud py_pcl, Scalar partition_size,
+                                   Scalar overlap, Scalar voxel_size,
+                                   bool single, i32 partition) {
+  auto positions = from_pyarray<Point>(py_pcl.positions);
+  auto normals = from_pyarray<Vector>(py_pcl.normals);
+
+  auto pcl = hrbf_surf::PointCloud::from(positions, normals);
+  hrbf_surf::PoUSurface::Ptr ps;
+
+  if (single)
+    ps = *hrbf_surf::PoUSurface::from(pcl);
+  else
+    ps = *hrbf_surf::PoUSurface::from(pcl, partition_size, overlap);
+
+  py_SurfaceMesh sm;
+
+  if (partition >= 0) {
+    auto s = ps->partitionMesh(partition, voxel_size);
+    sm.F = s.F;
+    sm.V = s.V;
+    auto part = ps->partition(partition);
+    sm.P = Eigen::MatrixXd(part.indices.size(), 3);
+    for (h_index i = 0; i < part.indices.size(); ++i) {
+      auto p = pcl->positions()[part.indices[i]];
+      sm.P(i, 0) = p.x;
+      sm.P(i, 1) = p.y;
+      sm.P(i, 2) = p.z;
+    }
+    sm.B = Eigen::MatrixXd(8, 3);
+    for (h_index i = 0; i < 8; ++i) {
+      auto p = part.bounds.corner(i);
+      sm.B(i, 0) = p.x;
+      sm.B(i, 1) = p.y;
+      sm.B(i, 2) = p.z;
+    }
+  } else {
+    auto s = ps->mesh(voxel_size);
+    sm.F = s.F;
+    sm.V = s.V;
+  }
+  return sm;
+}
+
+PYBIND11_DECLARE_HOLDER_TYPE(T, hermes::Ref<T>)
 
 PYBIND11_MODULE(hrbf_surface_py, m) {
   m.doc() = "Naiades module";
@@ -164,15 +221,19 @@ PYBIND11_MODULE(hrbf_surface_py, m) {
   py::class_<py_PointCloud>(m, "PointCloud")
       .def_readonly("positions", &py_PointCloud::positions)
       .def_readonly("normals", &py_PointCloud::normals);
-  py::class_<py_Surface>(m, "Surface");
   py::class_<py_SurfaceMesh>(m, "SurfaceMesh")
+      .def_readonly("pv", &py_SurfaceMesh::P)
+      .def_readonly("bounds", &py_SurfaceMesh::B)
       .def_readonly("positions", &py_SurfaceMesh::V)
       .def_readonly("faces", &py_SurfaceMesh::F);
 
   m.def("load_point_cloud", &loadPointCloud);
   m.def("sphere", &sphere);
   m.def("square", &square);
-  m.def("reconstruct", &reconstruct);
+  m.def("reconstruct_surface", &reconstruct_surface);
+  m.def("reconstruct", &reconstruct, py::return_value_policy::reference);
+  m.def("reconstruct_single", &reconstruct_single,
+        py::return_value_policy::reference);
   m.def("partition_mesh", &create_partition_mesh);
   m.def("mesh", &create_mesh);
 }

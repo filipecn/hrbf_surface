@@ -31,13 +31,13 @@
 
 namespace hrbf_surf {
 
-Result<PoUSurface> PoUSurface::from(PointCloud ::Ptr pcl, Scalar cell_size,
-                                    Scalar overlap) {
+Result<PoUSurface::Ptr> PoUSurface::from(PointCloud ::Ptr pcl, Scalar cell_size,
+                                         Scalar overlap) {
   auto bounds = pcl->computeBounds();
 
   // define a overlap for PoU
   Scalar half_cell_size = cell_size / 2.0;
-  Vector half_search_box(half_cell_size + cell_size * overlap / 2.0);
+  Vector half_search_box(half_cell_size + cell_size * overlap);
 
   auto grid_size_f = (bounds.upper - bounds.lower) / cell_size;
   hermes::size3 grid_size(static_cast<h_index>(std::ceil(grid_size_f.x)) + 1,
@@ -46,50 +46,56 @@ Result<PoUSurface> PoUSurface::from(PointCloud ::Ptr pcl, Scalar cell_size,
 
   HERMES_INFO("grid setup (total partitions = {})", grid_size.total());
   // setup partitions
-  PoUSurface ps;
-  ps.pcl_ = pcl;
-  ps.bounds_ = bounds;
-  HERMES_LOG_VARIABLES(bounds, grid_size, cell_size, grid_size_f,
-                       half_cell_size);
+  auto ps = PoUSurface::Ptr::shared();
+  ps->pcl_ = pcl;
+  ps->bounds_ = bounds;
+  HERMES_LOG_VARIABLE(bounds);
+  HERMES_LOG_VARIABLE(grid_size);
+  HERMES_LOG_VARIABLE(cell_size);
+  HERMES_LOG_VARIABLE(grid_size_f);
+  HERMES_LOG_VARIABLE(half_cell_size);
   for (auto ijk : hermes::range3(grid_size)) {
     PartitionData pd;
-    auto center = Point(ijk.i * cell_size + half_cell_size,
-                        ijk.j * cell_size + half_cell_size,
-                        ijk.k * cell_size + half_cell_size);
+    auto center = Point(bounds.lower.x + ijk.i * cell_size + half_cell_size,
+                        bounds.lower.y + ijk.j * cell_size + half_cell_size,
+                        bounds.lower.z + ijk.k * cell_size + half_cell_size);
     Bounds search_box(center - half_search_box, center + half_search_box);
     pd.indices = pcl->searchBox(search_box);
     pd.bounds = search_box;
     // consider only cells that provide enough points for a stable HRBF
     if (pd.indices.size() > 15) {
-      ps.partitions_.emplace_back(pd);
+      ps->partitions_.emplace_back(pd);
     }
   }
 
-  HERMES_INFO("solving for {} partitions", ps.partitions_.size());
-  if (ps.partitions_.empty())
+  HERMES_INFO("solving for {} partitions", ps->partitions_.size());
+  if (ps->partitions_.empty())
     return HsResult::inputError();
 
   // compute parititions
 #pragma omp parallel for schedule(dynamic)
-  for (h_index i = 0; i < ps.partitions_.size(); ++i) {
-    ps.partitions_[i].hrbf.init(pcl->positions(), pcl->normals(),
-                                ps.partitions_[i].indices);
-    HERMES_LOG_VARIABLES(i, ps.partitions_[i].indices.size());
-    if (ps.partitions_[i].hrbf.hasNaN()) {
+  for (h_index i = 0; i < ps->partitions_.size(); ++i) {
+    ps->partitions_[i].rbf.init(pcl->positions(), ps->partitions_[i].indices);
+    ps->partitions_[i].hrbf.init(pcl->positions(), pcl->normals(),
+                                 ps->partitions_[i].indices);
+    if (ps->partitions_[i].hrbf.hasNaN()) {
+      HERMES_ERROR("invalid hrbf system");
+    }
+    if (ps->partitions_[i].rbf.hasNaN()) {
       HERMES_ERROR("invalid hrbf system");
     }
   }
   HERMES_INFO("finished solving partitions");
 
-  return Result<PoUSurface>(std::move(ps));
+  return Result<PoUSurface::Ptr>(std::move(ps));
 }
 
-Result<PoUSurface> PoUSurface::from(PointCloud::Ptr pcl) {
+Result<PoUSurface::Ptr> PoUSurface::from(PointCloud::Ptr pcl) {
   auto bounds = pcl->computeBounds();
 
-  PoUSurface ps;
-  ps.bounds_ = bounds;
-  ps.pcl_ = pcl;
+  auto ps = PoUSurface::Ptr::shared();
+  ps->bounds_ = bounds;
+  ps->pcl_ = pcl;
 
   PartitionData pd;
   pd.bounds = bounds;
@@ -97,15 +103,17 @@ Result<PoUSurface> PoUSurface::from(PointCloud::Ptr pcl) {
 
   // consider only cells that provide enough points for a stable HRBF
   if (pd.indices.size() > 15) {
-    ps.partitions_.emplace_back(pd);
+    ps->partitions_.emplace_back(pd);
     HERMES_INFO("computing single hrbf with {} indices and bounds {}",
-                ps.partitions_[0].indices.size(), hermes::to_string(bounds));
-    ps.partitions_[0].hrbf.init(pcl->positions(), pcl->normals(),
-                                ps.partitions_[0].indices);
-    HERMES_LOG_VARIABLE(ps.partitions_[0].indices.size());
-    HERMES_LOG_VARIABLE(ps.partitions_[0].hrbf.hasNaN());
+                ps->partitions_[0].indices.size(), hermes::to_string(bounds));
+    ps->partitions_[0].rbf.init(pcl->positions(), ps->partitions_[0].indices);
+    ps->partitions_[0].hrbf.init(pcl->positions(), pcl->normals(),
+                                 ps->partitions_[0].indices);
+    HERMES_LOG_VARIABLE(ps->partitions_[0].indices.size());
+    HERMES_LOG_VARIABLE(ps->partitions_[0].hrbf.hasNaN());
+    HERMES_LOG_VARIABLE(ps->partitions_[0].rbf.hasNaN());
   }
-  return Result<PoUSurface>(std::move(ps));
+  return Result<PoUSurface::Ptr>(std::move(ps));
 }
 
 Scalar wendlandWeight(Scalar distance, Scalar radius) {
@@ -118,16 +126,17 @@ Scalar wendlandWeight(Scalar distance, Scalar radius) {
 
 Scalar PoUSurface::operator()(const Point &p) const {
 
-  // // find partitions this point belongs
-  // h_index partition_count = 0;
-  // Scalar sum = 0.0;
-  // for (const auto &partition : partitions_) {
-  //   if (partition.bounds.contains(p)) {
-  //     sum += partition.hrbf(pcl_->positions(), partition.indices, p);
-  //   }
-  // }
-  // if (partition_count)
-  //   return sum / partition_count;
+  // find partitions this point belongs
+  h_index partition_count = 0;
+  Scalar sum = 0.0;
+  for (const auto &partition : partitions_) {
+    if (partition.bounds.contains(p)) {
+      sum += partition.hrbf(pcl_->positions(), partition.indices, p);
+      // sum += partition.rbf(pcl_->positions(), partition.indices, p);
+    }
+  }
+  if (partition_count)
+    return sum / partition_count;
 
   // get closest partition
   h_index closest_idx = 0;
@@ -139,6 +148,9 @@ Scalar PoUSurface::operator()(const Point &p) const {
       closest_idx = i;
     }
   }
+
+  // return partitions_[closest_idx].rbf(pcl_->positions(),
+  //                                     partitions_[closest_idx].indices, p);
   // compute from closest partition
   return partitions_[closest_idx].hrbf(pcl_->positions(),
                                        partitions_[closest_idx].indices, p);
@@ -170,6 +182,8 @@ PoUSurface::SurfaceMesh PoUSurface::mesh(Scalar voxel_size) const {
   Eigen::MatrixXd GV(N, 3); // Grid Vertex positions
   Eigen::VectorXd S(N);     // Scalar values
 
+  HERMES_LOG_VARIABLE(bounds_);
+  HERMES_LOG_VARIABLE(voxel_size);
   HERMES_LOG_VARIABLE(resolution);
   HERMES_INFO("evaluating surface");
 #pragma omp parallel for collapse(3)
@@ -226,9 +240,13 @@ PoUSurface::SurfaceMesh PoUSurface::partitionMesh(h_index index,
         GV.row(idx)[0] = p.x;
         GV.row(idx)[1] = p.y;
         GV.row(idx)[2] = p.z;
-
-        S(idx) = partitions_[index].hrbf(pcl_->positions(),
-                                         partitions_[index].indices, p);
+        // consider only points inside
+        S(idx) = 1.0;
+        // if (partitions_[index].bounds.contains(p))
+        S(idx) = partitions_[index].rbf(pcl_->positions(),
+                                        partitions_[index].indices, p);
+        // S(idx) = partitions_[index].hrbf(pcl_->positions(),
+        //                                  partitions_[index].indices, p);
       }
     }
   }
@@ -239,6 +257,10 @@ PoUSurface::SurfaceMesh PoUSurface::partitionMesh(h_index index,
   igl::copyleft::marching_cubes(S, GV, resolution.width, resolution.height,
                                 resolution.depth, 0.0, m.V, m.F);
   return m;
+}
+
+const PoUSurface::PartitionData &PoUSurface::partition(h_index i) const {
+  return partitions_[i];
 }
 
 } // namespace hrbf_surf

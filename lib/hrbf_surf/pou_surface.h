@@ -34,27 +34,30 @@ namespace hrbf_surf {
 
 class PoUSurface {
 public:
+  using Ptr = hermes::Ref<PoUSurface>;
   struct SurfaceMesh {
     Eigen::MatrixXd V; // Mesh Vertices
     Eigen::MatrixXi F; // Mesh Faces (triangles)
   };
 
-  static Result<PoUSurface> from(PointCloud::Ptr pcl, Scalar cell_size,
-                                 Scalar overlap);
-  static Result<PoUSurface> from(PointCloud::Ptr pcl);
+  struct PartitionData {
+    Bounds bounds;
+    std::vector<h_index> indices;
+    HRBFSystem<CubicRBF> hrbf;
+    RBFSystem<CubicRBF> rbf;
+  };
+
+  static Result<PoUSurface::Ptr> from(PointCloud::Ptr pcl, Scalar cell_size,
+                                      Scalar overlap);
+  static Result<PoUSurface::Ptr> from(PointCloud::Ptr pcl);
 
   Scalar operator()(const Point &p) const;
 
   SurfaceMesh mesh(Scalar voxel_size) const;
   SurfaceMesh partitionMesh(h_index index, Scalar voxel_size) const;
+  const PartitionData &partition(h_index i) const;
 
 private:
-  struct PartitionData {
-    Bounds bounds;
-    std::vector<h_index> indices;
-    HRBFSystem<CubicRBF> hrbf;
-  };
-
   Bounds bounds_;
   std::vector<PartitionData> partitions_;
   PointCloud::Ptr pcl_;
