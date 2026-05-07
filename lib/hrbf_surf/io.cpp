@@ -272,11 +272,11 @@ Result<PointCloud::Ptr> loadPCLFromPly(std::filesystem::path filepath) {
   return Result<PointCloud::Ptr>(PointCloud::from(verts, norms));
 }
 
-void writePointCloud(std::filesystem::path path, const PointCloud &cloud) {
-  auto positions = cloud.positions();
-  auto normals = cloud.normals();
+void writePointCloud(std::filesystem::path path, PointCloud::Ptr cloud) {
+  auto positions = cloud->positions();
+  auto normals = cloud->normals();
 
-  size_t N = cloud.positions().size();
+  size_t N = cloud->positions().size();
 
   igl::tinyply::PlyFile file;
 
@@ -296,12 +296,43 @@ void writePointCloud(std::filesystem::path path, const PointCloud &cloud) {
   file.write(outstream, true); // true = binary
 }
 
-void writeSurface(std::filesystem::path path, const PoUSurface &surface,
-                  const Bounds &bounds, Scalar voxel_size) {
+void writeSurface(std::filesystem::path path, PoUSurface::Ptr surface,
+                  Scalar voxel_size) {
 
-  auto m = surface.mesh(voxel_size);
-  HERMES_LOG_VARIABLE(m.V.rows());
-  HERMES_LOG_VARIABLE(m.V.cols());
+  auto m = surface->mesh(voxel_size);
+
+  Eigen::Matrix<float, Eigen::Dynamic, 3, Eigen::RowMajor> V_float =
+      m.V.cast<float>();
+  Eigen::Matrix<uint32_t, Eigen::Dynamic, 3, Eigen::RowMajor> F_uint =
+      m.F.cast<uint32_t>();
+
+  HERMES_LOG_VARIABLE(V_float.rows());
+  HERMES_LOG_VARIABLE(V_float.cols());
+
+  HERMES_LOG_VARIABLE(F_uint.rows());
+  HERMES_LOG_VARIABLE(F_uint.cols());
+  HERMES_LOG_VARIABLE(V_float.hasNaN());
+  HERMES_LOG_VARIABLE(F_uint.hasNaN());
+  HERMES_LOG_VARIABLE(V_float.maxCoeff());
+  HERMES_LOG_VARIABLE(V_float.minCoeff());
+
+  HERMES_LOG_VARIABLE(F_uint.maxCoeff());
+  HERMES_LOG_VARIABLE(F_uint.minCoeff());
+  using namespace igl::tinyply;
+  PlyFile mesh;
+  // 2. Add Vertices
+  mesh.add_properties_to_element(
+      "vertex", {"x", "y", "z"}, Type::FLOAT32, V_float.rows(),
+      reinterpret_cast<uint8_t *>(V_float.data()), Type::INVALID, 0);
+
+  // 3. Add Faces (Triangles)
+  mesh.add_properties_to_element(
+      "face", {"vertex_indices"}, Type::UINT32, F_uint.rows(),
+      reinterpret_cast<uint8_t *>(F_uint.data()), Type::UINT8, 3);
+
+  // 4. Write
+  std::ofstream out_stream(path, std::ios::binary);
+  mesh.write(out_stream, true);
 }
 
 } // namespace hrbf_surf::io

@@ -32,11 +32,11 @@
 
 namespace hrbf_surf::io {
 
-void writePointCloud(std::filesystem::path path, const PointCloud &cloud);
+void writePointCloud(std::filesystem::path path, PointCloud::Ptr cloud);
 
 Result<PointCloud::Ptr> loadPCLFromPly(std::filesystem::path path);
 
-void writeSurface(std::filesystem::path path, const PoUSurface &surface,
-                  const Bounds &bounds, Scalar voxel_size);
+void writeSurface(std::filesystem::path path, PoUSurface::Ptr surface,
+                  Scalar voxel_size);
 
 } // namespace hrbf_surf::io

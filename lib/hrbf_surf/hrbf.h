@@ -183,7 +183,8 @@ public:
 #undef P
 
     w.resize(N);
-    b.resize(N);
+
+    Eigen::VectorXd b(N);
 
 #define G(D, I) normals[ids[I]][D]
 
@@ -211,7 +212,7 @@ public:
     size_t N = n * 4 + POLY;
 
     if (w.rows() != N) {
-      HERMES_ERROR("bad system size {} != {} != {}", N, w.rows(), b.rows());
+      HERMES_ERROR("bad system size {} != {}", N, w.rows());
       return {};
     }
 
@@ -237,11 +238,10 @@ public:
   }
 
   bool empty() const { return w.size() == 0; }
-  bool hasNaN() const { return w.hasNaN() || b.hasNaN(); }
+  bool hasNaN() const { return w.hasNaN(); }
 
 private:
   Eigen::VectorXd w;
-  Eigen::VectorXd b;
 
   h_index POLY = 4;
 };
@@ -271,8 +271,10 @@ public:
     }
 
     A = A.inverse();
+
     w.resize(N);
-    b.resize(N);
+
+    Eigen::VectorXd b(N);
 #undef D
 #undef P
 
@@ -317,7 +319,7 @@ public:
     size_t N = n;
 
     if (w.rows() != N) {
-      HERMES_ERROR("bad system size {} != {} != {}", N, w.rows(), b.rows());
+      HERMES_ERROR("bad system size {} != {}", N, w.rows());
       return {};
     }
 
@@ -341,11 +343,10 @@ public:
   }
 
   bool empty() const { return w.size() == 0; }
-  bool hasNaN() const { return w.hasNaN() || b.hasNaN(); }
+  bool hasNaN() const { return w.hasNaN(); }
 
 private:
   Eigen::VectorXd w;
-  Eigen::VectorXd b;
 };
 
 } // namespace hrbf_surf

@@ -75,15 +75,17 @@ Result<PoUSurface::Ptr> PoUSurface::from(PointCloud ::Ptr pcl, Scalar cell_size,
   // compute parititions
 #pragma omp parallel for schedule(dynamic)
   for (h_index i = 0; i < ps->partitions_.size(); ++i) {
-    ps->partitions_[i].rbf.init(pcl->positions(), ps->partitions_[i].indices);
+    // printf("Iteration %d handled by thread %d", i, omp_get_thread_num());
+    // ps->partitions_[i].rbf.init(pcl->positions(),
+    // ps->partitions_[i].indices);
     ps->partitions_[i].hrbf.init(pcl->positions(), pcl->normals(),
                                  ps->partitions_[i].indices);
     if (ps->partitions_[i].hrbf.hasNaN()) {
       HERMES_ERROR("invalid hrbf system");
     }
-    if (ps->partitions_[i].rbf.hasNaN()) {
-      HERMES_ERROR("invalid hrbf system");
-    }
+    // if (ps->partitions_[i].rbf.hasNaN()) {
+    //   HERMES_ERROR("invalid hrbf system");
+    // }
   }
   HERMES_INFO("finished solving partitions");
 
@@ -106,12 +108,13 @@ Result<PoUSurface::Ptr> PoUSurface::from(PointCloud::Ptr pcl) {
     ps->partitions_.emplace_back(pd);
     HERMES_INFO("computing single hrbf with {} indices and bounds {}",
                 ps->partitions_[0].indices.size(), hermes::to_string(bounds));
-    ps->partitions_[0].rbf.init(pcl->positions(), ps->partitions_[0].indices);
+    // ps->partitions_[0].rbf.init(pcl->positions(),
+    // ps->partitions_[0].indices);
     ps->partitions_[0].hrbf.init(pcl->positions(), pcl->normals(),
                                  ps->partitions_[0].indices);
     HERMES_LOG_VARIABLE(ps->partitions_[0].indices.size());
     HERMES_LOG_VARIABLE(ps->partitions_[0].hrbf.hasNaN());
-    HERMES_LOG_VARIABLE(ps->partitions_[0].rbf.hasNaN());
+    // HERMES_LOG_VARIABLE(ps->partitions_[0].rbf.hasNaN());
   }
   return Result<PoUSurface::Ptr>(std::move(ps));
 }
@@ -151,7 +154,7 @@ Scalar PoUSurface::operator()(const Point &p) const {
 
   // return partitions_[closest_idx].rbf(pcl_->positions(),
   //                                     partitions_[closest_idx].indices, p);
-  // compute from closest partition
+  //  compute from closest partition
   return partitions_[closest_idx].hrbf(pcl_->positions(),
                                        partitions_[closest_idx].indices, p);
 
@@ -243,10 +246,10 @@ PoUSurface::SurfaceMesh PoUSurface::partitionMesh(h_index index,
         // consider only points inside
         S(idx) = 1.0;
         // if (partitions_[index].bounds.contains(p))
-        S(idx) = partitions_[index].rbf(pcl_->positions(),
-                                        partitions_[index].indices, p);
-        // S(idx) = partitions_[index].hrbf(pcl_->positions(),
-        //                                  partitions_[index].indices, p);
+        // S(idx) = partitions_[index].rbf(pcl_->positions(),
+        //                                partitions_[index].indices, p);
+        S(idx) = partitions_[index].hrbf(pcl_->positions(),
+                                         partitions_[index].indices, p);
       }
     }
   }
